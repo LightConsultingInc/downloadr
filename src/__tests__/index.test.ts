@@ -3,25 +3,31 @@ import https from 'https';
 import fs from 'fs';
 import { EventEmitter } from 'events';
 import type { IncomingMessage } from 'http';
+import http from 'http';
 
 // Mock the entire https and fs modules
 jest.mock('https');
 jest.mock('fs');
+jest.mock('http');
 
 // Add this type at the top of the file
 type MockResponse = EventEmitter & Partial<IncomingMessage>;
 
 describe('Downloadr', () => {
   let downloader: Downloadr;
-  const mockOptions = {
+  const mockHttpsOptions = {
     url: 'https://example.com/file.zip',
+    outputPath: '/path/to/file.zip',
+  };
+  const mockHttpOptions = {
+    url: 'http://example.com/file.zip',
     outputPath: '/path/to/file.zip',
   };
 
   beforeEach(() => {
     // Clear all mocks before each test
     jest.clearAllMocks();
-    downloader = new Downloadr(mockOptions);
+    downloader = new Downloadr(mockHttpsOptions);
   });
 
   describe('constructor', () => {
@@ -31,7 +37,7 @@ describe('Downloadr', () => {
 
     it('should accept custom chunk count and buffer size', () => {
       const customDownloader = new Downloadr({
-        ...mockOptions,
+        ...mockHttpsOptions,
         chunkCount: 5,
         highWaterMark: 128 * 1024,
       });
@@ -39,10 +45,44 @@ describe('Downloadr', () => {
     });
   });
 
+  describe('protocol selection', () => {
+    it('should use https for https URLs', () => {
+      const httpsDownloader = new Downloadr(mockHttpsOptions);
+
+      (https.request as jest.Mock).mockImplementation((_, __, callback) => {
+        callback({ headers: { 'content-length': '1000' } });
+        return { on: jest.fn(), end: jest.fn() };
+      });
+
+      return httpsDownloader.getFileSize().then(() => {
+        expect(https.request).toHaveBeenCalled();
+        expect(http.request).not.toHaveBeenCalled();
+      });
+    });
+
+    it('should use http for http URLs', () => {
+      const httpDownloader = new Downloadr(mockHttpOptions);
+
+      (http.request as jest.Mock).mockImplementation((_, __, callback) => {
+        callback({ headers: { 'content-length': '1000' } });
+        return { on: jest.fn(), end: jest.fn() };
+      });
+
+      return httpDownloader.getFileSize().then(() => {
+        expect(http.request).toHaveBeenCalled();
+        expect(https.request).not.toHaveBeenCalled();
+      });
+    });
+  });
+
   describe('download', () => {
     beforeEach(() => {
-      // Mock successful HEAD request
-      (https.request as jest.Mock).mockImplementation((_, __, callback) => {
+      // Update to configure both http and https mocks
+      const mockRequestImplementation = (
+        url: string | URL,
+        options: unknown,
+        callback: CallableFunction,
+      ): { on: jest.Mock; end: jest.Mock } => {
         const mockResponse = {
           headers: {
             'content-length': '1000',
@@ -53,22 +93,30 @@ describe('Downloadr', () => {
           on: jest.fn(),
           end: jest.fn(),
         };
-      });
+      };
 
-      // Mock successful GET request
-      (https.get as jest.Mock).mockImplementation((_, __, callback) => {
+      const mockGetImplementation = (
+        url: string | URL,
+        options: unknown,
+        callback: CallableFunction,
+      ): { on: jest.Mock } => {
         const mockResponse = new EventEmitter() as MockResponse;
         mockResponse.statusCode = 206;
         mockResponse.pipe = jest.fn();
 
-        // Emit end event after a short delay
         setTimeout(() => {
           mockResponse.emit('end');
         }, 10);
 
         callback(mockResponse);
         return { on: jest.fn() };
-      });
+      };
+
+      // Mock both http and https
+      (http.request as jest.Mock).mockImplementation(mockRequestImplementation);
+      (https.request as jest.Mock).mockImplementation(mockRequestImplementation);
+      (http.get as jest.Mock).mockImplementation(mockGetImplementation);
+      (https.get as jest.Mock).mockImplementation(mockGetImplementation);
 
       // Mock file system operations
       (fs.openSync as jest.Mock).mockReturnValue(1);
@@ -137,7 +185,7 @@ describe('Downloadr', () => {
 
     it('should create correct number of chunks', async () => {
       const customDownloader = new Downloadr({
-        ...mockOptions,
+        ...mockHttpsOptions,
         chunkCount: 5,
       });
 
@@ -145,6 +193,22 @@ describe('Downloadr', () => {
 
       // Check that https.get was called 5 times (once for each chunk)
       expect(https.get).toHaveBeenCalledTimes(5);
+    });
+
+    // Add test for HTTP download
+    it('should successfully download using HTTP protocol', async () => {
+      const httpDownloader = new Downloadr(mockHttpOptions);
+      const events: string[] = [];
+
+      httpDownloader.on(DownloadrEvents.DOWNLOAD_START, () => events.push('start'));
+      httpDownloader.on(DownloadrEvents.CHUNK_DOWNLOADED, () => events.push('chunk'));
+      httpDownloader.on(DownloadrEvents.DOWNLOAD_COMPLETE, () => events.push('complete'));
+
+      await httpDownloader.download();
+
+      expect(events).toEqual(['start', 'chunk', 'chunk', 'chunk', 'complete']);
+      expect(http.get).toHaveBeenCalled();
+      expect(https.get).not.toHaveBeenCalled();
     });
   });
 });

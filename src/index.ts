@@ -1,12 +1,16 @@
 import { EventEmitter } from 'events';
 import fs from 'fs';
 import https from 'https';
+import http from 'http';
 
 /** Represents a byte range chunk of a file */
 type Chunk = {
   start: number;
   end: number;
 };
+
+// Add a type for the protocol client
+type ProtocolClient = typeof http | typeof https;
 
 /** Configuration options for the Downloadr instance */
 export type DownloadrOptions = {
@@ -52,6 +56,7 @@ export class Downloadr extends EventEmitter {
   private outputPath: string;
   private chunkCount: number;
   private highWaterMark: number;
+  private protocolClient: ProtocolClient;
 
   /**
    * Creates a new Downloadr instance
@@ -63,6 +68,16 @@ export class Downloadr extends EventEmitter {
     this.outputPath = options.outputPath;
     this.chunkCount = options.chunkCount ?? CHUNK_COUNT;
     this.highWaterMark = options.highWaterMark ?? HIGH_WATER_MARK;
+    this.protocolClient = this.getProtocolClient(this.url);
+  }
+
+  /**
+   * Determines which protocol client to use based on the URL
+   * @param url - The URL to analyze
+   * @returns The appropriate protocol client (http or https)
+   */
+  private getProtocolClient(url: string): ProtocolClient {
+    return url.toLowerCase().startsWith('https:') ? https : http;
   }
 
   /**
@@ -72,7 +87,7 @@ export class Downloadr extends EventEmitter {
    */
   public async getFileSize(): Promise<number> {
     return new Promise((resolve, reject) => {
-      const req = https.request(this.url, { method: 'HEAD' }, (res) => {
+      const req = this.protocolClient.request(this.url, { method: 'HEAD' }, (res) => {
         const contentLength = res.headers['content-length'];
         if (!contentLength) {
           return reject(new Error('Content-Length header missing'));
@@ -98,7 +113,7 @@ export class Downloadr extends EventEmitter {
         },
       };
 
-      const req = https.get(this.url, options, (res) => {
+      const req = this.protocolClient.get(this.url, options, (res) => {
         if (res.statusCode !== 206) {
           return reject(new Error(`Unexpected status code: ${res.statusCode}`));
         }
