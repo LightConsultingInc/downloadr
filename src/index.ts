@@ -70,7 +70,7 @@ export class Downloadr extends EventEmitter {
    * @returns Promise that resolves with the file size
    * @throws Error if Content-Length header is missing
    */
-  private async getFileSize(): Promise<number> {
+  public async getFileSize(): Promise<number> {
     return new Promise((resolve, reject) => {
       const req = https.request(this.url, { method: 'HEAD' }, (res) => {
         const contentLength = res.headers['content-length'];
