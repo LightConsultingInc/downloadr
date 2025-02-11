@@ -139,7 +139,7 @@ describe('Downloadr', () => {
       expect(events).toEqual(['start', 'chunk', 'chunk', 'chunk', 'complete']);
     });
 
-    it('should handle missing content-length header', async () => {
+    it('should handle missing content-length header by downloading in single chunk', async () => {
       (https.request as jest.Mock).mockImplementation((_, __, callback) => {
         callback({ headers: {} });
         return {
@@ -148,7 +148,38 @@ describe('Downloadr', () => {
         };
       });
 
-      await expect(downloader.download()).rejects.toThrow('Content-Length header missing');
+      await downloader.download();
+      expect(https.get).toHaveBeenCalledTimes(1); // Should only make one request
+      expect(https.get).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({}), // Should not include Range header
+        expect.any(Function),
+      );
+    });
+
+    it('should download file in single chunk when content-length is missing', async () => {
+      // Mock HEAD request to return no content-length
+      (https.request as jest.Mock).mockImplementation((_, __, callback) => {
+        callback({ headers: {} });
+        return {
+          on: jest.fn(),
+          end: jest.fn(),
+        };
+      });
+
+      const events: string[] = [];
+      downloader.on(DownloadrEvents.DOWNLOAD_START, () => events.push('start'));
+      downloader.on(DownloadrEvents.CHUNK_DOWNLOADED, () => events.push('chunk'));
+      downloader.on(DownloadrEvents.DOWNLOAD_COMPLETE, () => events.push('complete'));
+
+      await downloader.download();
+
+      expect(events).toEqual(['start', 'chunk', 'complete']); // Only one chunk
+      expect(https.get).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({}), // No Range header for full file download
+        expect.any(Function),
+      );
     });
 
     it('should handle invalid status code', async () => {
