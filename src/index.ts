@@ -90,7 +90,10 @@ export class Downloadr extends EventEmitter {
       const req = this.protocolClient.request(this.url, { method: 'HEAD' }, (res) => {
         const contentLength = res.headers['content-length'];
         if (!contentLength) {
-          return reject(new Error('Content-Length header missing'));
+          // Only modify chunk count when content-length is missing
+          this.chunkCount = 1;
+          resolve(-1);
+          return;
         }
         resolve(parseInt(contentLength, 10));
       });
@@ -107,11 +110,14 @@ export class Downloadr extends EventEmitter {
    */
   private async downloadChunk(start: number, end: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      const options = {
-        headers: {
-          Range: `bytes=${start}-${end}`,
-        },
-      };
+      const options =
+        end === Infinity
+          ? {}
+          : {
+              headers: {
+                Range: `bytes=${start}-${end}`,
+              },
+            };
 
       const req = this.protocolClient.get(this.url, options, (res) => {
         if (res.statusCode !== 206) {
@@ -166,6 +172,15 @@ export class Downloadr extends EventEmitter {
   public async download(): Promise<void> {
     try {
       const fileSize = await this.getFileSize();
+
+      if (fileSize === -1) {
+        // Unknown size, download as single chunk without pre-allocation
+        this.emit(DownloadrEvents.DOWNLOAD_START);
+        await this.downloadChunk(0, Infinity);
+        this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+        return;
+      }
+
       console.log(`File size: ${fileSize} bytes`);
 
       // Preallocate a blank file of the needed size
