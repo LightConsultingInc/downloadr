@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/LightConsultingInc/downloadr/compare/v1.0.0...v1.1.0) (2025-02-11)
+
+
+### Features
+
+* support downloads over http or https ([7f2c76e](https://github.com/LightConsultingInc/downloadr/commit/7f2c76e60f31772038a0ccf34231ddadcbe721f3))
+
 ## 1.0.0 (2025-02-11)
 
 
