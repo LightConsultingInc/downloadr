@@ -1,5 +1,5 @@
 {
-  "name": "downloadr",
+  "name": "@lightci/downloadr",
   "version": "1.0.0",
   "description": "Downloadr is a tool to download files from the internet.",
   "main": "dist/index.js",
