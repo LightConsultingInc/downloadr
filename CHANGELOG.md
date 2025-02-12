@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/LightConsultingInc/downloadr/compare/v1.1.0...v1.1.1) (2025-02-12)
+
+
+### Bug Fixes
+
+* handle missing content-length header by downloading in single chunk ([db9129d](https://github.com/LightConsultingInc/downloadr/commit/db9129d64eaa3ffe32b2aac867d2b28edbea839d))
+
 ## [1.1.0](https://github.com/LightConsultingInc/downloadr/compare/v1.0.0...v1.1.0) (2025-02-11)
 
 
