@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.2](https://github.com/LightConsultingInc/downloadr/compare/v1.1.1...v1.1.2) (2025-02-20)
+
+
+### Bug Fixes
+
+* handle 200 response codes for servers without byte range support ([d4976da](https://github.com/LightConsultingInc/downloadr/commit/d4976dadca941d76701160e73426bba6b757d77a)), closes [#15](https://github.com/LightConsultingInc/downloadr/issues/15)
+* remove byte range modification in downloadChunk ([1395a71](https://github.com/LightConsultingInc/downloadr/commit/1395a71e22e4a1da339c8874f3e61dd1d24d9d09))
+
 ## [1.1.1](https://github.com/LightConsultingInc/downloadr/compare/v1.1.0...v1.1.1) (2025-02-12)
 
 
