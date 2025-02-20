@@ -120,11 +120,14 @@ export class Downloadr extends EventEmitter {
             };
 
       const req = this.protocolClient.get(this.url, options, (res) => {
-        if (res.statusCode !== 206) {
+        if (res.statusCode !== 206 && res.statusCode !== 200) {
           return reject(new Error(`Unexpected status code: ${res.statusCode}`));
         }
+        
+        // For 200 responses, write to the beginning of the file as a single chunk
+        const writeStart = res.statusCode === 200 ? 0 : start;
         const fileStream = fs.createWriteStream(this.outputPath, {
-          start,
+          start: writeStart,
           flags: 'r+',
           highWaterMark: this.highWaterMark,
         });
@@ -174,7 +177,26 @@ export class Downloadr extends EventEmitter {
       const fileSize = await this.getFileSize();
 
       if (fileSize === -1) {
-        // Unknown size, download as single chunk without pre-allocation
+        // Unknown size or server doesn't support byte ranges, download as single chunk without pre-allocation
+        this.emit(DownloadrEvents.DOWNLOAD_START);
+        await this.downloadChunk(0, Infinity);
+        this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+        return;
+      }
+
+      // Try a test request to check if server supports byte ranges
+      const supportsByteRanges = await new Promise<boolean>((resolve) => {
+        const req = this.protocolClient.get(this.url, {
+          headers: { Range: 'bytes=0-0' }
+        }, (res) => {
+          resolve(res.statusCode === 206);
+        });
+        req.on('error', () => resolve(false));
+        req.end();
+      }).catch(() => false);
+
+      if (!supportsByteRanges) {
+        // Server doesn't support byte ranges, download as single chunk
         this.emit(DownloadrEvents.DOWNLOAD_START);
         await this.downloadChunk(0, Infinity);
         this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);

@@ -182,6 +182,29 @@ describe('Downloadr', () => {
       );
     });
 
+    it('should handle 200 response code for full file download', async () => {
+      (https.get as jest.Mock).mockImplementation((_, __, callback) => {
+        const mockResponse = new EventEmitter() as MockResponse;
+        mockResponse.statusCode = 200;
+        mockResponse.pipe = jest.fn();
+        
+        setTimeout(() => {
+          mockResponse.emit('end');
+        }, 10);
+        
+        callback(mockResponse);
+        return { on: jest.fn() };
+      });
+
+      const events: string[] = [];
+      downloader.on(DownloadrEvents.DOWNLOAD_START, () => events.push('start'));
+      downloader.on(DownloadrEvents.CHUNK_DOWNLOADED, () => events.push('chunk'));
+      downloader.on(DownloadrEvents.DOWNLOAD_COMPLETE, () => events.push('complete'));
+
+      await downloader.download();
+      expect(events).toEqual(['start', 'chunk', 'complete']);
+    });
+
     it('should handle invalid status code', async () => {
       (https.get as jest.Mock).mockImplementation((_, __, callback) => {
         const mockResponse = new EventEmitter() as MockResponse;
@@ -222,8 +245,8 @@ describe('Downloadr', () => {
 
       await customDownloader.download();
 
-      // Check that https.get was called 5 times (once for each chunk)
-      expect(https.get).toHaveBeenCalledTimes(5);
+      // Check that https.get was called 6 times (once for byte range test, then once for each chunk)
+      expect(https.get).toHaveBeenCalledTimes(6);
     });
 
     // Add test for HTTP download
