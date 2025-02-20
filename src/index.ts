@@ -128,11 +128,8 @@ export class Downloadr extends EventEmitter {
         if (res.statusCode !== 206 && res.statusCode !== 200) {
           return reject(new Error(`Unexpected status code: ${res.statusCode}`));
         }
-        
-        // For 200 responses, write to the beginning of the file as a single chunk
-        const writeStart = res.statusCode === 200 ? 0 : start;
         const fileStream = fs.createWriteStream(this.outputPath, {
-          start: writeStart,
+          start,
           flags: 'r+',
           highWaterMark: this.highWaterMark,
         });
