@@ -85,7 +85,7 @@ describe('Downloadr', () => {
       ): { on: jest.Mock; end: jest.Mock } => {
         const mockResponse = {
           headers: {
-            'content-length': '1000',
+            'content-length': '200000000', // 200MB
           },
         };
         callback(mockResponse);
@@ -182,7 +182,20 @@ describe('Downloadr', () => {
       );
     });
 
-    it('should handle 200 response code for full file download', async () => {
+    it('should handle small files as single chunk', async () => {
+      // Mock HEAD request to return small file size
+      (https.request as jest.Mock).mockImplementation((_, __, callback) => {
+        callback({
+          headers: {
+            'content-length': '1000000' // 1MB (under 100MB threshold)
+          }
+        });
+        return {
+          on: jest.fn(),
+          end: jest.fn()
+        };
+      });
+
       (https.get as jest.Mock).mockImplementation((_, __, callback) => {
         const mockResponse = new EventEmitter() as MockResponse;
         mockResponse.statusCode = 200;
@@ -203,6 +216,7 @@ describe('Downloadr', () => {
 
       await downloader.download();
       expect(events).toEqual(['start', 'chunk', 'complete']);
+      expect(https.get).toHaveBeenCalledTimes(1); // Should only make one request
     });
 
     it('should handle invalid status code', async () => {
@@ -245,8 +259,8 @@ describe('Downloadr', () => {
 
       await customDownloader.download();
 
-      // Check that https.get was called 6 times (once for byte range test, then once for each chunk)
-      expect(https.get).toHaveBeenCalledTimes(6);
+      // Check that https.get was called 5 times (once for each chunk)
+      expect(https.get).toHaveBeenCalledTimes(5);
     });
 
     // Add test for HTTP download
