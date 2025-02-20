@@ -95,7 +95,12 @@ export class Downloadr extends EventEmitter {
           resolve(-1);
           return;
         }
-        resolve(parseInt(contentLength, 10));
+        const size = parseInt(contentLength, 10);
+        // For files under 100MB, use single chunk
+        if (size < 100 * 1024 * 1024) {
+          this.chunkCount = 1;
+        }
+        resolve(size);
       });
       req.on('error', reject);
       req.end();
@@ -176,27 +181,8 @@ export class Downloadr extends EventEmitter {
     try {
       const fileSize = await this.getFileSize();
 
-      if (fileSize === -1) {
-        // Unknown size or server doesn't support byte ranges, download as single chunk without pre-allocation
-        this.emit(DownloadrEvents.DOWNLOAD_START);
-        await this.downloadChunk(0, Infinity);
-        this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
-        return;
-      }
-
-      // Try a test request to check if server supports byte ranges
-      const supportsByteRanges = await new Promise<boolean>((resolve) => {
-        const req = this.protocolClient.get(this.url, {
-          headers: { Range: 'bytes=0-0' }
-        }, (res) => {
-          resolve(res.statusCode === 206);
-        });
-        req.on('error', () => resolve(false));
-        req.end();
-      }).catch(() => false);
-
-      if (!supportsByteRanges) {
-        // Server doesn't support byte ranges, download as single chunk
+      if (fileSize === -1 || this.chunkCount === 1) {
+        // Unknown size or small file, download as single chunk
         this.emit(DownloadrEvents.DOWNLOAD_START);
         await this.downloadChunk(0, Infinity);
         this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
