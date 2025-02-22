@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/LightConsultingInc/downloadr/compare/v1.1.2...v1.1.3) (2025-02-22)
+
+
+### Bug Fixes
+
+* use content range because HEAD was return 403 ([d344daa](https://github.com/LightConsultingInc/downloadr/commit/d344daada2027d1897e4a3f196b1508a3764cab5))
+
 ## [1.1.2](https://github.com/LightConsultingInc/downloadr/compare/v1.1.1...v1.1.2) (2025-02-20)
 
 
