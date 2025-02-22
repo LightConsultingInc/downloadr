@@ -87,21 +87,46 @@ export class Downloadr extends EventEmitter {
    */
   public async getFileSize(): Promise<number> {
     return new Promise((resolve, reject) => {
-      const req = this.protocolClient.request(this.url, { method: 'HEAD' }, (res) => {
-        const contentLength = res.headers['content-length'];
-        if (!contentLength) {
-          // Only modify chunk count when content-length is missing
+      const req = this.protocolClient.request(
+        this.url,
+        {
+          method: 'GET',
+          headers: { range: 'bytes=0-0' },
+        },
+        (res) => {
+          const contentRange = res.headers['content-range'];
+
+          if (contentRange) {
+            // Extract the total size from 'bytes 0-0/12345'
+            const sizeMatch = contentRange.match(/bytes \d+-\d+\/(\d+)/);
+            if (sizeMatch) {
+              const size = parseInt(sizeMatch[1], 10);
+
+              // Set chunkCount based on the size
+              this.chunkCount =
+                size < 100 * 1024 * 1024 ? 1 : Math.ceil(size / (100 * 1024 * 1024));
+
+              resolve(size);
+              return;
+            }
+          }
+
+          // Fallback to content-length if content-range is not available
+          const contentLength = res.headers['content-length'];
+          if (contentLength) {
+            const size = parseInt(contentLength, 10);
+            this.chunkCount = size < 100 * 1024 * 1024 ? 1 : Math.ceil(size / (100 * 1024 * 1024));
+            resolve(size);
+            return;
+          }
+
+          // If neither header is present, set default behavior
           this.chunkCount = 1;
           resolve(-1);
           return;
-        }
-        const size = parseInt(contentLength, 10);
-        // For files under 100MB, use single chunk
-        if (size < 100 * 1024 * 1024) {
-          this.chunkCount = 1;
-        }
-        resolve(size);
-      });
+        },
+      );
+
       req.on('error', reject);
       req.end();
     });
