@@ -37,6 +37,8 @@ export enum DownloadrEvents {
   CHUNK_DOWNLOAD_FAILED = 'chunkDownloadFailed',
   /** Emitted when the download fails */
   DOWNLOAD_FAILED = 'downloadFailed',
+  /** Emitted when the download is cancelled */
+  DOWNLOAD_CANCELLED = 'downloadCancelled',
 }
 
 const CHUNK_COUNT = 3;
@@ -57,6 +59,8 @@ export class Downloadr extends EventEmitter {
   private chunkCount: number;
   private highWaterMark: number;
   private protocolClient: ProtocolClient;
+  private activeRequests: http.ClientRequest[] = [];
+  private isCancelled: boolean = false;
 
   /**
    * Creates a new Downloadr instance
@@ -140,6 +144,12 @@ export class Downloadr extends EventEmitter {
    */
   private async downloadChunk(start: number, end: number): Promise<void> {
     return new Promise((resolve, reject) => {
+      // If already cancelled, reject immediately
+      if (this.isCancelled) {
+        reject(new Error('Download cancelled'));
+        return;
+      }
+
       const options =
         end === Infinity
           ? {}
@@ -153,6 +163,13 @@ export class Downloadr extends EventEmitter {
         if (res.statusCode !== 206 && res.statusCode !== 200) {
           return reject(new Error(`Unexpected status code: ${res.statusCode}`));
         }
+
+        // If cancelled after request was made but before response was received
+        if (this.isCancelled) {
+          reject(new Error('Download cancelled'));
+          return;
+        }
+
         const fileStream = fs.createWriteStream(this.outputPath, {
           start,
           flags: 'r+',
@@ -160,17 +177,27 @@ export class Downloadr extends EventEmitter {
         });
         res.pipe(fileStream);
         res.on('data', (chunk) => {
-          this.emit(DownloadrEvents.CHUNK_DOWNLOAD_PROGRESS, { start, end, chunk });
+          if (!this.isCancelled) {
+            this.emit(DownloadrEvents.CHUNK_DOWNLOAD_PROGRESS, { start, end, chunk });
+          }
         });
         res.on('end', () => {
-          this.emit(DownloadrEvents.CHUNK_DOWNLOADED, { start, end });
-          resolve();
+          if (!this.isCancelled) {
+            this.emit(DownloadrEvents.CHUNK_DOWNLOADED, { start, end });
+            resolve();
+          } else {
+            reject(new Error('Download cancelled'));
+          }
         });
         res.on('error', (err) => {
           this.emit(DownloadrEvents.CHUNK_DOWNLOAD_FAILED, err);
           reject(err);
         });
       });
+
+      // Store the request in activeRequests
+      this.activeRequests.push(req);
+
       req.on('error', (err) => {
         this.emit(DownloadrEvents.CHUNK_DOWNLOAD_FAILED, err);
         reject(err);
@@ -196,18 +223,53 @@ export class Downloadr extends EventEmitter {
   }
 
   /**
+   * Cancels the download in progress
+   * @returns void
+   */
+  public cancel(): void {
+    if (this.isCancelled) {
+      return; // Already cancelled
+    }
+
+    this.isCancelled = true;
+
+    // Abort all active requests
+    for (const req of this.activeRequests) {
+      req.destroy();
+    }
+
+    // Clear the active requests array
+    this.activeRequests = [];
+
+    // Emit the cancel event
+    this.emit(DownloadrEvents.DOWNLOAD_CANCELLED);
+  }
+
+  /**
    * Starts the download process
    * @throws Error if the download fails for any reason
    */
   public async download(): Promise<void> {
     try {
+      // Reset cancellation state
+      this.isCancelled = false;
+      this.activeRequests = [];
+
       const fileSize = await this.getFileSize();
+
+      if (this.isCancelled) {
+        this.emit(DownloadrEvents.DOWNLOAD_CANCELLED);
+        return;
+      }
 
       if (fileSize === -1 || this.chunkCount === 1) {
         // Unknown size or small file, download as single chunk
         this.emit(DownloadrEvents.DOWNLOAD_START);
         await this.downloadChunk(0, Infinity);
-        this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+
+        if (!this.isCancelled) {
+          this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+        }
         return;
       }
 
@@ -227,8 +289,14 @@ export class Downloadr extends EventEmitter {
 
       await Promise.all(tasks);
 
-      this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+      if (!this.isCancelled) {
+        this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+      }
     } catch (err) {
+      if (this.isCancelled) {
+        // If the error was due to cancellation, don't emit download failed
+        return;
+      }
       this.emit(DownloadrEvents.DOWNLOAD_FAILED, err);
       throw err; // Re-throw the error to let the caller handle it
     }

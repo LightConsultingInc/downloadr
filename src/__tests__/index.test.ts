@@ -281,4 +281,107 @@ describe('Downloadr', () => {
       expect(https.get).not.toHaveBeenCalled();
     });
   });
+
+  describe('cancel', () => {
+    beforeEach(() => {
+      // Update to configure both http and https mocks
+      const mockRequestImplementation = (
+        url: string | URL,
+        options: unknown,
+        callback: CallableFunction,
+      ): { on: jest.Mock; end: jest.Mock } => {
+        const mockResponse = {
+          headers: {
+            'content-length': '200000000', // 200MB
+          },
+        };
+        callback(mockResponse);
+        return {
+          on: jest.fn(),
+          end: jest.fn(),
+        };
+      };
+
+      const mockGetImplementation = (
+        url: string | URL,
+        options: unknown,
+        callback: CallableFunction,
+      ): { on: jest.Mock; destroy: jest.Mock } => {
+        const mockResponse = new EventEmitter() as MockResponse;
+        mockResponse.statusCode = 206;
+        mockResponse.pipe = jest.fn();
+
+        setTimeout(() => {
+          mockResponse.emit('end');
+        }, 10);
+
+        callback(mockResponse);
+        return {
+          on: jest.fn(),
+          destroy: jest.fn(),
+        };
+      };
+
+      // Mock both http and https
+      (http.request as jest.Mock).mockImplementation(mockRequestImplementation);
+      (https.request as jest.Mock).mockImplementation(mockRequestImplementation);
+      (http.get as jest.Mock).mockImplementation(mockGetImplementation);
+      (https.get as jest.Mock).mockImplementation(mockGetImplementation);
+
+      // Mock file system operations
+      (fs.openSync as jest.Mock).mockReturnValue(1);
+      (fs.ftruncateSync as jest.Mock).mockReturnValue(undefined);
+      (fs.closeSync as jest.Mock).mockReturnValue(undefined);
+      (fs.createWriteStream as jest.Mock).mockReturnValue({
+        on: jest.fn(),
+      });
+    });
+
+    it('should cancel download and emit cancel event', async () => {
+      const events: string[] = [];
+
+      downloader.on(DownloadrEvents.DOWNLOAD_START, () => events.push('start'));
+      downloader.on(DownloadrEvents.DOWNLOAD_CANCELLED, () => events.push('cancelled'));
+      downloader.on(DownloadrEvents.DOWNLOAD_COMPLETE, () => events.push('complete'));
+
+      // Start download but don't await it
+      const downloadPromise = downloader.download();
+
+      // Cancel the download
+      setTimeout(() => {
+        downloader.cancel();
+      }, 10);
+
+      // This should not throw since we're handling cancellation
+      await downloadPromise;
+
+      expect(events).toContain('start');
+      expect(events).toContain('cancelled');
+      expect(events).not.toContain('complete');
+    });
+
+    it('should be safe to call cancel multiple times', () => {
+      downloader.cancel();
+      downloader.cancel(); // Should not throw
+    });
+
+    it('should not emit download complete after cancellation', async () => {
+      const events: string[] = [];
+
+      downloader.on(DownloadrEvents.DOWNLOAD_START, () => events.push('start'));
+      downloader.on(DownloadrEvents.DOWNLOAD_CANCELLED, () => events.push('cancelled'));
+      downloader.on(DownloadrEvents.DOWNLOAD_COMPLETE, () => events.push('complete'));
+
+      // Start download
+      const downloadPromise = downloader.download();
+
+      // Cancel immediately
+      downloader.cancel();
+
+      await downloadPromise;
+
+      expect(events).toContain('cancelled');
+      expect(events).not.toContain('complete');
+    });
+  });
 });
