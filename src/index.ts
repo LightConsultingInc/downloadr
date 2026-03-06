@@ -3,6 +3,14 @@ import fs from 'fs';
 import https from 'https';
 import http from 'http';
 
+if (typeof pendo !== 'undefined') {
+  pendo.initialize({
+    visitor: {
+      id: 'ANONYMOUS_VISITOR_ID',
+    },
+  });
+}
+
 /** Represents a byte range chunk of a file */
 type Chunk = {
   start: number;
