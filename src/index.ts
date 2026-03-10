@@ -44,6 +44,9 @@ export enum DownloadrEvents {
 const CHUNK_COUNT = 3;
 const HIGH_WATER_MARK = 64 * 1024;
 
+const PENDO_TRACK_URL = 'https://data.pendo-dev.pendo-dev.com/data/track';
+const PENDO_INTEGRATION_KEY = 'dee5acc2-e92d-4e23-898f-3f2810aab34c';
+
 /**
  * A class that handles downloading files in parallel chunks
  * @example
@@ -61,6 +64,8 @@ export class Downloadr extends EventEmitter {
   private protocolClient: ProtocolClient;
   private activeRequests: http.ClientRequest[] = [];
   private isCancelled: boolean = false;
+  private fileSize: number = -1;
+  private downloadStartTime: number = 0;
 
   /**
    * Creates a new Downloadr instance
@@ -73,6 +78,16 @@ export class Downloadr extends EventEmitter {
     this.chunkCount = options.chunkCount ?? CHUNK_COUNT;
     this.highWaterMark = options.highWaterMark ?? HIGH_WATER_MARK;
     this.protocolClient = this.getProtocolClient(this.url);
+
+    this.pendoTrack('download_configured', {
+      url: this.url,
+      outputPath: this.outputPath,
+      chunkCount: this.chunkCount,
+      highWaterMark: this.highWaterMark,
+      protocol: this.getProtocolName(),
+      isCustomChunkCount: options.chunkCount !== undefined,
+      isCustomHighWaterMark: options.highWaterMark !== undefined,
+    });
   }
 
   /**
@@ -82,6 +97,50 @@ export class Downloadr extends EventEmitter {
    */
   private getProtocolClient(url: string): ProtocolClient {
     return url.toLowerCase().startsWith('https:') ? https : http;
+  }
+
+  private getProtocolName(): string {
+    return this.url.toLowerCase().startsWith('https:') ? 'https' : 'http';
+  }
+
+  private pendoTrack(
+    event: string,
+    properties: Record<string, string | number | boolean>,
+  ): void {
+    try {
+      const payload = JSON.stringify({
+        type: 'track',
+        event,
+        visitorId: 'system',
+        accountId: 'system',
+        timestamp: Date.now(),
+        properties,
+      });
+
+      const req = https.request(
+        PENDO_TRACK_URL,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-pendo-integration-key': PENDO_INTEGRATION_KEY,
+            'Content-Length': Buffer.byteLength(payload),
+          },
+        },
+        () => {
+          // Response handled silently
+        },
+      );
+
+      req.on('error', () => {
+        // Silently ignore tracking errors to not break application flow
+      });
+
+      req.write(payload);
+      req.end();
+    } catch {
+      // Silently ignore tracking errors to not break application flow
+    }
   }
 
   /**
@@ -110,6 +169,15 @@ export class Downloadr extends EventEmitter {
               this.chunkCount =
                 size < 100 * 1024 * 1024 ? 1 : Math.ceil(size / (100 * 1024 * 1024));
 
+              this.pendoTrack('file_size_detected', {
+                url: this.url,
+                fileSize: size,
+                calculatedChunkCount: this.chunkCount,
+                sizeDetectionMethod: 'content-range',
+                supportsRangeRequests: true,
+                protocol: this.getProtocolName(),
+              });
+
               resolve(size);
               return;
             }
@@ -120,12 +188,32 @@ export class Downloadr extends EventEmitter {
           if (contentLength) {
             const size = parseInt(contentLength, 10);
             this.chunkCount = size < 100 * 1024 * 1024 ? 1 : Math.ceil(size / (100 * 1024 * 1024));
+
+            this.pendoTrack('file_size_detected', {
+              url: this.url,
+              fileSize: size,
+              calculatedChunkCount: this.chunkCount,
+              sizeDetectionMethod: 'content-length',
+              supportsRangeRequests: false,
+              protocol: this.getProtocolName(),
+            });
+
             resolve(size);
             return;
           }
 
           // If neither header is present, set default behavior
           this.chunkCount = 1;
+
+          this.pendoTrack('file_size_detected', {
+            url: this.url,
+            fileSize: -1,
+            calculatedChunkCount: 1,
+            sizeDetectionMethod: 'unknown',
+            supportsRangeRequests: false,
+            protocol: this.getProtocolName(),
+          });
+
           resolve(-1);
           return;
         },
@@ -159,6 +247,7 @@ export class Downloadr extends EventEmitter {
               },
             };
 
+      const chunkStartTime = Date.now();
       const req = this.protocolClient.get(this.url, options, (res) => {
         if (res.statusCode !== 206 && res.statusCode !== 200) {
           return reject(new Error(`Unexpected status code: ${res.statusCode}`));
@@ -184,6 +273,15 @@ export class Downloadr extends EventEmitter {
         res.on('end', () => {
           if (!this.isCancelled) {
             this.emit(DownloadrEvents.CHUNK_DOWNLOADED, { start, end });
+
+            this.pendoTrack('chunk_download_completed', {
+              url: this.url,
+              chunkStart: start,
+              chunkEnd: end,
+              chunkSizeBytes: end === Infinity ? -1 : end - start + 1,
+              chunkDurationMs: Date.now() - chunkStartTime,
+            });
+
             resolve();
           } else {
             reject(new Error('Download cancelled'));
@@ -191,6 +289,17 @@ export class Downloadr extends EventEmitter {
         });
         res.on('error', (err) => {
           this.emit(DownloadrEvents.CHUNK_DOWNLOAD_FAILED, err);
+
+          this.pendoTrack('chunk_download_failed', {
+            url: this.url,
+            chunkStart: start,
+            chunkEnd: end,
+            chunkSizeBytes: end === Infinity ? -1 : end - start + 1,
+            errorMessage: String(err.message).substring(0, 200),
+            errorType: err.name || 'Error',
+            httpStatusCode: res.statusCode ?? -1,
+          });
+
           reject(err);
         });
       });
@@ -233,6 +342,8 @@ export class Downloadr extends EventEmitter {
 
     this.isCancelled = true;
 
+    const activeRequestCount = this.activeRequests.length;
+
     // Abort all active requests
     for (const req of this.activeRequests) {
       req.destroy();
@@ -243,6 +354,16 @@ export class Downloadr extends EventEmitter {
 
     // Emit the cancel event
     this.emit(DownloadrEvents.DOWNLOAD_CANCELLED);
+
+    this.pendoTrack('download_cancelled', {
+      url: this.url,
+      outputPath: this.outputPath,
+      fileSize: this.fileSize,
+      chunkCount: this.chunkCount,
+      protocol: this.getProtocolName(),
+      activeRequestCount,
+      elapsedTimeMs: this.downloadStartTime > 0 ? Date.now() - this.downloadStartTime : -1,
+    });
   }
 
   /**
@@ -256,6 +377,7 @@ export class Downloadr extends EventEmitter {
       this.activeRequests = [];
 
       const fileSize = await this.getFileSize();
+      this.fileSize = fileSize;
 
       if (this.isCancelled) {
         this.emit(DownloadrEvents.DOWNLOAD_CANCELLED);
@@ -265,10 +387,32 @@ export class Downloadr extends EventEmitter {
       if (fileSize === -1 || this.chunkCount === 1) {
         // Unknown size or small file, download as single chunk
         this.emit(DownloadrEvents.DOWNLOAD_START);
+        this.downloadStartTime = Date.now();
+
+        this.pendoTrack('download_started', {
+          url: this.url,
+          outputPath: this.outputPath,
+          fileSize,
+          chunkCount: 1,
+          protocol: this.getProtocolName(),
+          highWaterMark: this.highWaterMark,
+          isChunkedDownload: false,
+        });
+
         await this.downloadChunk(0, Infinity);
 
         if (!this.isCancelled) {
           this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+
+          this.pendoTrack('download_completed', {
+            url: this.url,
+            outputPath: this.outputPath,
+            fileSize,
+            chunkCount: 1,
+            protocol: this.getProtocolName(),
+            downloadDurationMs: Date.now() - this.downloadStartTime,
+            highWaterMark: this.highWaterMark,
+          });
         }
         return;
       }
@@ -283,6 +427,18 @@ export class Downloadr extends EventEmitter {
       const chunks = this.getChunks(fileSize);
 
       this.emit(DownloadrEvents.DOWNLOAD_START);
+      this.downloadStartTime = Date.now();
+
+      this.pendoTrack('download_started', {
+        url: this.url,
+        outputPath: this.outputPath,
+        fileSize,
+        chunkCount: chunks.length,
+        protocol: this.getProtocolName(),
+        highWaterMark: this.highWaterMark,
+        isChunkedDownload: chunks.length > 1,
+      });
+
       const tasks: Promise<void>[] = chunks.map((chunk) =>
         this.downloadChunk(chunk.start, chunk.end),
       );
@@ -291,6 +447,16 @@ export class Downloadr extends EventEmitter {
 
       if (!this.isCancelled) {
         this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+
+        this.pendoTrack('download_completed', {
+          url: this.url,
+          outputPath: this.outputPath,
+          fileSize,
+          chunkCount: chunks.length,
+          protocol: this.getProtocolName(),
+          downloadDurationMs: Date.now() - this.downloadStartTime,
+          highWaterMark: this.highWaterMark,
+        });
       }
     } catch (err) {
       if (this.isCancelled) {
@@ -298,6 +464,19 @@ export class Downloadr extends EventEmitter {
         return;
       }
       this.emit(DownloadrEvents.DOWNLOAD_FAILED, err);
+
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.pendoTrack('download_failed', {
+        url: this.url,
+        outputPath: this.outputPath,
+        fileSize: this.fileSize,
+        chunkCount: this.chunkCount,
+        protocol: this.getProtocolName(),
+        errorMessage: error.message.substring(0, 200),
+        errorType: error.name || 'Error',
+        downloadDurationMs: this.downloadStartTime > 0 ? Date.now() - this.downloadStartTime : -1,
+      });
+
       throw err; // Re-throw the error to let the caller handle it
     }
   }
