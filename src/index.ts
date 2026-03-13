@@ -61,6 +61,41 @@ export class Downloadr extends EventEmitter {
   private protocolClient: ProtocolClient;
   private activeRequests: http.ClientRequest[] = [];
   private isCancelled: boolean = false;
+  private downloadStartTime: number = 0;
+
+  /**
+   * Sends a Pendo Track Event via HTTP POST (fire-and-forget).
+   */
+  private pendoTrack(event: string, properties: Record<string, unknown> = {}): void {
+    const payload = JSON.stringify({
+      type: 'track',
+      event,
+      visitorId: 'system',
+      accountId: 'system',
+      timestamp: Date.now(),
+      properties,
+    });
+
+    const options = {
+      hostname: 'data.pendo-dev.pendo-dev.com',
+      path: '/data/track',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-pendo-integration-key': 'bbdff3dc-7b27-42ff-86ac-ca4908f1aeaf',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    };
+
+    try {
+      const req = https.request(options);
+      req.on('error', () => { /* ignore tracking errors */ });
+      req.write(payload);
+      req.end();
+    } catch {
+      // Never let tracking break application flow
+    }
+  }
 
   /**
    * Creates a new Downloadr instance
@@ -110,6 +145,15 @@ export class Downloadr extends EventEmitter {
               this.chunkCount =
                 size < 100 * 1024 * 1024 ? 1 : Math.ceil(size / (100 * 1024 * 1024));
 
+              this.pendoTrack('file_size_detected', {
+                url: this.url,
+                fileSize: size,
+                detectionMethod: 'content-range',
+                calculatedChunkCount: this.chunkCount,
+                serverSupportsRange: true,
+                protocol: this.url.startsWith('https') ? 'https' : 'http',
+              });
+
               resolve(size);
               return;
             }
@@ -120,12 +164,32 @@ export class Downloadr extends EventEmitter {
           if (contentLength) {
             const size = parseInt(contentLength, 10);
             this.chunkCount = size < 100 * 1024 * 1024 ? 1 : Math.ceil(size / (100 * 1024 * 1024));
+
+            this.pendoTrack('file_size_detected', {
+              url: this.url,
+              fileSize: size,
+              detectionMethod: 'content-length',
+              calculatedChunkCount: this.chunkCount,
+              serverSupportsRange: false,
+              protocol: this.url.startsWith('https') ? 'https' : 'http',
+            });
+
             resolve(size);
             return;
           }
 
           // If neither header is present, set default behavior
           this.chunkCount = 1;
+
+          this.pendoTrack('file_size_detected', {
+            url: this.url,
+            fileSize: -1,
+            detectionMethod: 'none',
+            calculatedChunkCount: 1,
+            serverSupportsRange: false,
+            protocol: this.url.startsWith('https') ? 'https' : 'http',
+          });
+
           resolve(-1);
           return;
         },
@@ -191,6 +255,15 @@ export class Downloadr extends EventEmitter {
         });
         res.on('error', (err) => {
           this.emit(DownloadrEvents.CHUNK_DOWNLOAD_FAILED, err);
+          this.pendoTrack('chunk_download_failed', {
+            url: this.url,
+            chunkStart: start,
+            chunkEnd: end,
+            statusCode: res.statusCode,
+            errorMessage: err.message?.substring(0, 100),
+            errorType: err.name,
+            protocol: this.url.startsWith('https') ? 'https' : 'http',
+          });
           reject(err);
         });
       });
@@ -200,6 +273,14 @@ export class Downloadr extends EventEmitter {
 
       req.on('error', (err) => {
         this.emit(DownloadrEvents.CHUNK_DOWNLOAD_FAILED, err);
+        this.pendoTrack('chunk_download_failed', {
+          url: this.url,
+          chunkStart: start,
+          chunkEnd: end,
+          errorMessage: err.message?.substring(0, 100),
+          errorType: err.name,
+          protocol: this.url.startsWith('https') ? 'https' : 'http',
+        });
         reject(err);
       });
     });
@@ -233,6 +314,8 @@ export class Downloadr extends EventEmitter {
 
     this.isCancelled = true;
 
+    const activeRequestCount = this.activeRequests.length;
+
     // Abort all active requests
     for (const req of this.activeRequests) {
       req.destroy();
@@ -243,6 +326,14 @@ export class Downloadr extends EventEmitter {
 
     // Emit the cancel event
     this.emit(DownloadrEvents.DOWNLOAD_CANCELLED);
+    this.pendoTrack('download_cancelled', {
+      url: this.url,
+      outputPath: this.outputPath,
+      chunkCount: this.chunkCount,
+      protocol: this.url.startsWith('https') ? 'https' : 'http',
+      activeRequestCount,
+      elapsedTimeMs: this.downloadStartTime > 0 ? Date.now() - this.downloadStartTime : 0,
+    });
   }
 
   /**
@@ -264,11 +355,28 @@ export class Downloadr extends EventEmitter {
 
       if (fileSize === -1 || this.chunkCount === 1) {
         // Unknown size or small file, download as single chunk
+        this.downloadStartTime = Date.now();
         this.emit(DownloadrEvents.DOWNLOAD_START);
+        this.pendoTrack('download_started', {
+          url: this.url,
+          outputPath: this.outputPath,
+          fileSize,
+          chunkCount: 1,
+          protocol: this.url.startsWith('https') ? 'https' : 'http',
+          highWaterMark: this.highWaterMark,
+        });
         await this.downloadChunk(0, Infinity);
 
         if (!this.isCancelled) {
           this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+          this.pendoTrack('download_completed', {
+            url: this.url,
+            outputPath: this.outputPath,
+            fileSize,
+            chunkCount: 1,
+            protocol: this.url.startsWith('https') ? 'https' : 'http',
+            downloadDurationMs: Date.now() - this.downloadStartTime,
+          });
         }
         return;
       }
@@ -281,8 +389,28 @@ export class Downloadr extends EventEmitter {
       fs.closeSync(fd);
 
       const chunks = this.getChunks(fileSize);
+      const chunkSizeBytes = Math.ceil(fileSize / this.chunkCount);
 
+      this.downloadStartTime = Date.now();
       this.emit(DownloadrEvents.DOWNLOAD_START);
+      this.pendoTrack('download_started', {
+        url: this.url,
+        outputPath: this.outputPath,
+        fileSize,
+        chunkCount: chunks.length,
+        protocol: this.url.startsWith('https') ? 'https' : 'http',
+        highWaterMark: this.highWaterMark,
+      });
+
+      this.pendoTrack('parallel_download_initiated', {
+        url: this.url,
+        fileSize,
+        chunkCount: chunks.length,
+        chunkSizeBytes,
+        outputPath: this.outputPath,
+        protocol: this.url.startsWith('https') ? 'https' : 'http',
+      });
+
       const tasks: Promise<void>[] = chunks.map((chunk) =>
         this.downloadChunk(chunk.start, chunk.end),
       );
@@ -291,6 +419,14 @@ export class Downloadr extends EventEmitter {
 
       if (!this.isCancelled) {
         this.emit(DownloadrEvents.DOWNLOAD_COMPLETE);
+        this.pendoTrack('download_completed', {
+          url: this.url,
+          outputPath: this.outputPath,
+          fileSize,
+          chunkCount: chunks.length,
+          protocol: this.url.startsWith('https') ? 'https' : 'http',
+          downloadDurationMs: Date.now() - this.downloadStartTime,
+        });
       }
     } catch (err) {
       if (this.isCancelled) {
@@ -298,6 +434,15 @@ export class Downloadr extends EventEmitter {
         return;
       }
       this.emit(DownloadrEvents.DOWNLOAD_FAILED, err);
+      this.pendoTrack('download_failed', {
+        url: this.url,
+        outputPath: this.outputPath,
+        chunkCount: this.chunkCount,
+        protocol: this.url.startsWith('https') ? 'https' : 'http',
+        errorMessage: (err instanceof Error ? err.message : String(err))?.substring(0, 100),
+        errorType: err instanceof Error ? err.name : 'Unknown',
+        downloadDurationMs: this.downloadStartTime > 0 ? Date.now() - this.downloadStartTime : 0,
+      });
       throw err; // Re-throw the error to let the caller handle it
     }
   }
